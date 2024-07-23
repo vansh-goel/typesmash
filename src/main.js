@@ -1,7 +1,9 @@
 import kaplay from "kaplay";
 import "kaplay/global";
-
-const k = kaplay();
+const k = kaplay({
+    backgroundAudio: true,
+    background: [0, 0, 0],
+});
 
 k.loadSprite("character", "sprites/bean.png");
 
@@ -65,17 +67,9 @@ async function fetchRandomWords(count = 100) {
   return words;
 }
 
-function getMissedWordsThreshold(spawnInterval) {
-  if (spawnInterval <= 0.5) return 30;
-  if (spawnInterval <= 0.75) return 25;
-  if (spawnInterval <= 1) return 20;
-  if (spawnInterval <= 1.25) return 15;
-  if (spawnInterval <= 1.5) return 10;
-  return 20;
-}
-
 scene("game", () => {
   k.loadSprite("background", "sprites/s4m_ur4i-bg_clouds.png");
+  k.loadSprite("heart", "sprites/heart.png");
 
   let wordCount = 10;
   let spawnInterval = 2;
@@ -86,12 +80,22 @@ scene("game", () => {
   let totalTypedWords = 0;
   let correctTypedWords = 0;
   let startTime = Date.now();
+  let lives = 10;
 
   add([
     sprite("background", { width: width(), height: height() }),
     pos(0, 0),
     layer("background"),
   ]);
+
+  const hearts = [];
+  for (let i = 0; i < lives; i++) {
+    hearts.push(add([
+      sprite("heart"),
+      pos(24 + i * 32, 24),
+      scale(0.5),
+    ]));
+  }
 
   k.add([
     rect(width(), 20),
@@ -112,11 +116,6 @@ scene("game", () => {
     "player",
   ]);
 
-  const wpmLabel = add([
-    text("WPM: 0"),
-    pos(24, 24),
-  ]);
-
   const typingText = add([
     text("", { size: 24 }),
     pos(width() - 150, 24),
@@ -132,6 +131,8 @@ scene("game", () => {
     wordsFetched += words.length;
   }
 
+  let correctWordsStreak = 0;
+
   async function spawnWords() {
     if (wordsQueue.length === 0) {
       await fetchAndQueueWords();
@@ -140,10 +141,10 @@ scene("game", () => {
     const word = wordsQueue.shift();
     const wordObj = add([
       text(word, { size: 26 }),
-      pos(width(), rand(50, height() - 30)),
+      pos(width(), rand(50, height() - 200)),
       area(),
       color(0, 0, 0),
-      move(LEFT, rand(100, 200)),
+      move(LEFT, rand(100, 200) + correctTypedWords * 5), // Increase speed
       "word",
       { value: word },
     ]);
@@ -152,8 +153,12 @@ scene("game", () => {
       if (wordObj.pos.x < 0) {
         destroy(wordObj);
         missedWords++;
-        if (missedWords > getMissedWordsThreshold(spawnInterval)) {
-          go("lose", calculateWPM(), calculateAccuracy(), missedWords, spawnInterval);
+        if (missedWords % 3 === 0) { // Change life deduction criteria
+          lives--;
+          destroy(hearts.pop());
+          if (lives <= 0) {
+            go("lose", missedWords, correctTypedWords);
+          }
         }
       }
     });
@@ -167,36 +172,36 @@ scene("game", () => {
     spawnWords();
   });
 
-  function spawnBullet(p) {
-    add([
-      rect(12, 48),
-      area(),
-      pos(p),
-      anchor("center"),
-      color(127, 127, 255),
-      outline(4),
-      move(UP, BULLET_SPEED),
-      offscreen({ destroy: true }),
-      "bullet",
+onCollide("word", (w) => {
+  destroy(w);
+  correctTypedWords++;
+  totalTypedWords++;
+  correctWordsStreak++;
+  typingText.text = "";
+  addConfetti({ pos: w.pos });
+  if (correctWordsStreak % 2 === 0 && lives < 10) {
+    lives++;
+    const newHeart = k.add([
+      sprite("heart"),
+      pos(24 + (lives - 1) * 32, 24),
+      scale(0.5),
     ]);
+    hearts.push(newHeart);
+    correctWordsStreak = 0
   }
+});
 
-  onCollide("bullet", "word", (b, w) => {
-    destroy(b);
-    destroy(w);
-    correctTypedWords++;
-    totalTypedWords++;
-    wpmLabel.text = `WPM: ${calculateWPM()}`;
-    typingText.text = "";
-    addConfetti({ pos: w.pos });
-  });
+  k.loadSound("keypress", "sounds/spacebar.mp3");
+  k.loadSound("spacebar", "sounds/keypress.mp3");
 
   onKeyPress((key) => {
     if (key.length === 1 && /[a-z]/i.test(key)) {
+      k.play("keypress",{ volume: 0.4 });
       currentTyping += key.toLowerCase();
     } else if (key === "backspace") {
       currentTyping = currentTyping.slice(0, -1);
     } else if (key === "space") {
+      k.play("spacebar", { volume: 0.2 });
       const words = get("word");
       let wordTyped = false;
       for (const word of words) {
@@ -218,7 +223,6 @@ scene("game", () => {
       targetWord = null;
     }
     typingText.text = currentTyping;
-    wpmLabel.text = `WPM: ${calculateWPM()}`;
 
     if (currentTyping.length === 1) {
       const words = get("word");
@@ -233,53 +237,19 @@ scene("game", () => {
     if (targetWord) {
       const targetX = targetWord.pos.x;
       if (player.pos.x < targetX) {
-        player.move(`${targetX / 2}`, 0); // Move right
+        player.move(targetX / 2, 0); // Move right
       } else if (player.pos.x > targetX) {
-        player.move(`${-(targetX / 2)}`, 0); // Move left
+        player.move(-(targetX / 2), 0); // Move left
       }
     }
   });
-
-  onUpdate(() => {
-    const accuracy = calculateAccuracy();
-    if (totalTypedWords > 10 && accuracy < 30) {
-      go("lose", calculateWPM(), accuracy, missedWords, spawnInterval);
-    }
-
-    const wpm = calculateWPM();
-    if (wpm >= 5 && wordCount < 11) {
-      wordCount = 11;
-      spawnInterval = 1.5;
-    } else if (wpm >= 10 && wordCount < 12) {
-      wordCount = 12;
-      spawnInterval = 1.25;
-    } else if (wpm >= 15 && wordCount < 13) {
-      wordCount = 13;
-      spawnInterval = 1;
-    } else if (wpm >= 20 && wordCount < 14) {
-      wordCount = 14;
-      spawnInterval = 0.75;
-    } else if (wpm >= 25 && wordCount < 15) {
-      wordCount = 15;
-      spawnInterval = 0.5;
-    }
-  });
-
-    function calculateWPM() {
-        const elapsedMinutes = (Date.now() - startTime) / 60000;
-        const charactersTyped = totalTypedWords * 5; // 
-        const grossWPM = charactersTyped / 5 / elapsedMinutes;
-        const accuracy = correctTypedWords / totalTypedWords;
-        const netWPM = grossWPM * accuracy;
-        return Math.round(netWPM || 0);
-    }
 
   function calculateAccuracy() {
     return Math.round((correctTypedWords / totalTypedWords) * 100 || 0);
   }
 });
 
-scene("lose", (wpm, accuracy, missedWords, spawnInterval) => {
+scene("lose", (missedWords, correctTypedWords) => {
   k.loadSprite("background", "sprites/background.jpg");
   add([
     sprite("background", { width: width(), height: height() }),
@@ -290,30 +260,14 @@ scene("lose", (wpm, accuracy, missedWords, spawnInterval) => {
   addKaboom(center());
 
   k.add([
-    text(`Game Over!\nWPM: ${wpm}\nAccuracy: ${accuracy}%\nMissed Words: ${missedWords}`, { size: 36 }),
+    text(`Game Over!\nCorrect Words: ${correctTypedWords}\nMissed Words: ${missedWords}`, { size: 36 }),
     pos(center()),
     anchor("center"),
   ]);
 
-  if (accuracy < 30) {
-    add([
-      text("You were defeated due to less than 30% accuracy", { size: 24 }),
-      pos(center().add(0, 80)),
-      anchor("center"),
-    ]);
-  }
-
-  if (missedWords > getMissedWordsThreshold(spawnInterval)) {
-    add([
-      text(`You were defeated due to missing more than ${getMissedWordsThreshold(spawnInterval)} words`, { size: 24 }),
-      pos(center().add(0, 120)),
-      anchor("center"),
-    ]);
-  }
-
   add([
     text("Press Space to Restart", { size: 24 }),
-    pos(center().add(0, 160)),
+    pos(center().add(0, 80)),
     anchor("center"),
   ]);
 
@@ -322,6 +276,6 @@ scene("lose", (wpm, accuracy, missedWords, spawnInterval) => {
   });
 });
 
-setGravity(900)
+setGravity(900);
 
 go("game");
